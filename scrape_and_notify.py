@@ -92,11 +92,11 @@ def scrape_deals():
             asin = it.select_one("h2 a[href]")["href"].split("/dp/")[-1].split("/")[0]
             link = f"https://www.amazon.ca/dp/{asin}?tag={AFFILIATE_TAG}"
             deals.append({
-                "title":     title_el.text.strip(),
+                "title":      title_el.text.strip(),
                 "sale_price": f"{sale_price:.2f}",
                 "orig_price": f"{orig_price:.2f}",
                 "discount":   f"{int(discount)}%",
-                "link":        link
+                "link":       link
             })
     return deals
 
@@ -131,4 +131,3 @@ async def run_and_notify():
 
 if __name__ == "__main__":
     asyncio.run(run_and_notify())
-```
