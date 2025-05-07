@@ -13,7 +13,6 @@ from telegram import Bot
 load_dotenv()
 BOT_TOKEN     = os.getenv("TELEGRAM_BOT_TOKEN")
 AFFILIATE_TAG = os.getenv("AMZN_AFFILIATE_TAG", "amznerrorsca-20")
-# Default to your channel username; ensure it starts with '@'
 raw_channel   = os.getenv("TELEGRAM_CHANNEL", "AmznErrorsCA")
 CHANNEL_ID    = raw_channel if raw_channel.startswith("@") else f"@{raw_channel}"
 
@@ -40,59 +39,92 @@ def is_new_deal(link: str) -> bool:
     json.dump(seen, open(SEEN_FILE, "w"))
     return True
 
-# ─── Scraper ───────────────────────────────────────────────────────────────────
-SEARCH_URL = "https://www.amazon.ca/s?k=laptop&sort=price-asc-rank"
+# ─── HTTP headers ──────────────────────────────────────────────────────────────
 HEADERS = {
     "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     "Accept-Language": "en-CA,en-US;q=0.9,en;q=0.8",
 }
 
-def scrape_deals():
-    resp = requests.get(SEARCH_URL, headers=HEADERS, timeout=10)
-    logger.info(f"GET {SEARCH_URL} → {resp.status_code}")
+# ─── 1. Fetch top category URLs from Amazon.ca homepage ────────────────────────
+def get_category_urls():
+    resp = requests.get("https://www.amazon.ca", headers=HEADERS, timeout=10)
     soup = BeautifulSoup(resp.text, "html.parser")
-    items = soup.select('div[data-component-type="s-search-result"]')
-    logger.info(f"Found {len(items)} items")
+    links = soup.select("#nav-xshop a[href]")
+    urls = []
+    for a in links:
+        href = a["href"]
+        if not href.startswith("/"):
+            continue
+        full = f"https://www.amazon.ca{href}"
+        # ensure sorting by lowest price first
+        if "?" in full:
+            urls.append(full + "&sort=price-asc-rank")
+        else:
+            urls.append(full + "?sort=price-asc-rank")
+    return urls
 
+# ─── 2. Scrape each category for >90% discount deals ──────────────────────────
+def scrape_deals():
     deals = []
-    for it in items:
-        title_el = it.select_one("h2 a span")
-        whole    = it.select_one("span.a-price-whole")
-        frac     = it.select_one("span.a-price-fraction")
-        if not (title_el and whole):
-            continue
-        price = float(f"{whole.text.replace(',', '')}.{frac.text if frac else '00'}")
-        if price < 5.0:
-            continue
-        asin = it.select_one("h2 a[href]")["href"].split("/dp/")[-1].split("/")[0]
-        link = f"https://www.amazon.ca/dp/{asin}?tag={AFFILIATE_TAG}"
-        deals.append({"title": title_el.text.strip(), "price": f"{price:.2f}", "link": link})
+    for url in get_category_urls():
+        resp = requests.get(url, headers=HEADERS, timeout=10)
+        logger.info(f"GET {url} → {resp.status_code}")
+        soup = BeautifulSoup(resp.text, "html.parser")
+        items = soup.select('div[data-component-type="s-search-result"]')
+        logger.info(f"Category {url}: found {len(items)} items")
+
+        for it in items:
+            title_el = it.select_one("h2 a span")
+            sale_el  = it.select_one("span.a-price span.a-offscreen")
+            orig_el  = it.select_one("span.a-price.a-text-price span.a-offscreen")
+            if not (title_el and sale_el and orig_el):
+                continue
+            # parse prices
+            sale_str = sale_el.text.replace("$", "").replace(",", "")
+            orig_str = orig_el.text.replace("$", "").replace(",", "")
+            try:
+                sale_price = float(sale_str)
+                orig_price = float(orig_str)
+            except ValueError:
+                continue
+            discount = (orig_price - sale_price) / orig_price * 100
+            if discount < 90:
+                continue
+
+            asin = it.select_one("h2 a[href]")["href"].split("/dp/")[-1].split("/")[0]
+            link = f"https://www.amazon.ca/dp/{asin}?tag={AFFILIATE_TAG}"
+            deals.append({
+                "title":    title_el.text.strip(),
+                "sale_price": f"{sale_price:.2f}",
+                "orig_price": f"{orig_price:.2f}",
+                "discount":  f"{int(discount)}%",
+                "link":       link
+            })
     return deals
 
-# ─── Async runner ──────────────────────────────────────────────────────────────
+# ─── 3. Async runner ─────────────────────────────────────────────────────────
 async def run_and_notify():
     bot = Bot(BOT_TOKEN)
     new_count = 0
-
     for deal in scrape_deals():
-        if is_new_deal(deal['link']):
+        if is_new_deal(deal["link"]):
             new_count += 1
-            message = (
+            text = (
                 f"🔥 *PRICE ERROR ALERT!* 🔥\n\n"
                 f"🛍️ *{deal['title']}*\n"
-                f"💸 *Now:* ${deal['price']}\n\n"
+                f"💸 *Now:* ${deal['sale_price']} (was ${deal['orig_price']})\n"
+                f"📉 *Discount:* {deal['discount']}\n\n"
                 f"[Buy Now]({deal['link']})"
             )
             await bot.send_message(
                 chat_id=CHANNEL_ID,
-                text=message,
+                text=text,
                 parse_mode="Markdown",
                 disable_web_page_preview=True
             )
-
     logger.info(f"Sent {new_count} new deal(s).")
 
-    # Debug ping if enabled
+    # optional debug ping
     if os.getenv("DEBUG_PING", "false").lower() == "true":
         await bot.send_message(
             chat_id=CHANNEL_ID,
@@ -101,3 +133,4 @@ async def run_and_notify():
 
 if __name__ == "__main__":
     asyncio.run(run_and_notify())
+```
