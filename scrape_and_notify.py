@@ -9,23 +9,25 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from telegram import Bot
 
-# ─── Load secrets ─────────────────────────────────────────────────────────────
+# ─── Load environment variables ─────────────────────────────────────────────────
 load_dotenv()
 BOT_TOKEN     = os.getenv("TELEGRAM_BOT_TOKEN")
 AFFILIATE_TAG = os.getenv("AMZN_AFFILIATE_TAG", "amznerrorsca-20")
-CHANNEL_ID    = os.getenv("TELEGRAM_CHANNEL", "@YourChannelUsername")
+# Default to your channel username; ensure it starts with '@'
+raw_channel   = os.getenv("TELEGRAM_CHANNEL", "AmznErrorsCA")
+CHANNEL_ID    = raw_channel if raw_channel.startswith("@") else f"@{raw_channel}"
 
 if not BOT_TOKEN:
     raise RuntimeError("Missing TELEGRAM_BOT_TOKEN in environment variables")
 
-# ─── Logging setup ────────────────────────────────────────────────────────────
+# ─── Logging setup ─────────────────────────────────────────────────────────────
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ─── Persistence: prevent duplicate alerts ─────────────────────────────────────
+# ─── Persistence: prevent duplicate alerts ───────────────────────────────────────
 SEEN_FILE = "seen.json"
 def is_new_deal(link: str) -> bool:
     try:
@@ -35,10 +37,10 @@ def is_new_deal(link: str) -> bool:
     if link in seen:
         return False
     seen.append(link)
-    json.dump(seen, open(SEEN_FILE, 'w'))
+    json.dump(seen, open(SEEN_FILE, "w"))
     return True
 
-# ─── Scraper ──────────────────────────────────────────────────────────────────
+# ─── Scraper ───────────────────────────────────────────────────────────────────
 SEARCH_URL = "https://www.amazon.ca/s?k=laptop&sort=price-asc-rank"
 HEADERS = {
     "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -67,7 +69,7 @@ def scrape_deals():
         deals.append({"title": title_el.text.strip(), "price": f"{price:.2f}", "link": link})
     return deals
 
-# ─── Async runner ─────────────────────────────────────────────────────────────
+# ─── Async runner ──────────────────────────────────────────────────────────────
 async def run_and_notify():
     bot = Bot(BOT_TOKEN)
     new_count = 0
@@ -96,9 +98,6 @@ async def run_and_notify():
             chat_id=CHANNEL_ID,
             text="✅ Debug ping: GitHub Actions successfully reached your Telegram channel!"
         )
-
-    # Close session
-    await bot.session.close()
 
 if __name__ == "__main__":
     asyncio.run(run_and_notify())
