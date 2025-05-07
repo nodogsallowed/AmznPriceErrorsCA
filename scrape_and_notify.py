@@ -74,12 +74,12 @@ def main():
                              parse_mode="Markdown", disable_web_page_preview=True)
     logger.info(f"Sent {new} new deal(s).")
 
-# ─── DEBUG: one-time ping to verify delivery ─────────────────────────────
+# ─── DEBUG PING ───────────────────────────────────────────────────────────────
+from telegram import Bot
 if os.getenv("DEBUG_PING", "false").lower() == "true":
-    bot = Bot(BOT_TOKEN)
-    bot.send_message(
+    Bot(BOT_TOKEN).send_message(
         chat_id=CHANNEL_ID,
-        text="✅ Debug ping: GitHub Actions successfully reached your Telegram channel!"
+        text="✅ Debug ping: GitHub Actions reached your Telegram channel!"
     )
 
 if __name__=="__main__":
