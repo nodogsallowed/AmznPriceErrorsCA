@@ -1,6 +1,10 @@
 # scrape_and_notify.py
 
-import os, json, logging, requests
+import os
+import json
+import logging
+import asyncio
+import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from telegram import Bot
@@ -8,24 +12,30 @@ from telegram import Bot
 # ─── Load secrets ─────────────────────────────────────────────────────────────
 load_dotenv()
 BOT_TOKEN     = os.getenv("TELEGRAM_BOT_TOKEN")
-AFFILIATE_TAG = os.getenv("AMZN_AFFILIATE_TAG")
-CHANNEL_ID    = os.getenv("TELEGRAM_CHANNEL")
+AFFILIATE_TAG = os.getenv("AMZN_AFFILIATE_TAG", "amznerrorsca-20")
+CHANNEL_ID    = os.getenv("TELEGRAM_CHANNEL", "@YourChannelUsername")
 
-# ─── Logging ─────────────────────────────────────────────────────────────────
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+if not BOT_TOKEN:
+    raise RuntimeError("Missing TELEGRAM_BOT_TOKEN in environment variables")
+
+# ─── Logging setup ────────────────────────────────────────────────────────────
+logging.basicConfig(
+    format="%(asctime)s %(levelname)s %(message)s",
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# ─── State storage ────────────────────────────────────────────────────────────
+# ─── Persistence: prevent duplicate alerts ─────────────────────────────────────
 SEEN_FILE = "seen.json"
-def is_new_deal(link):
+def is_new_deal(link: str) -> bool:
     try:
-        seen = json.load(open(SEEN_FILE))
-    except:
+        seen = json.load(open(SEEN_FILE, 'r'))
+    except (FileNotFoundError, json.JSONDecodeError):
         seen = []
     if link in seen:
         return False
     seen.append(link)
-    json.dump(seen, open(SEEN_FILE, "w"))
+    json.dump(seen, open(SEEN_FILE, 'w'))
     return True
 
 # ─── Scraper ──────────────────────────────────────────────────────────────────
@@ -49,38 +59,46 @@ def scrape_deals():
         frac     = it.select_one("span.a-price-fraction")
         if not (title_el and whole):
             continue
-        price = float(f"{whole.text.replace(',','')}.{frac.text if frac else '00'}")
+        price = float(f"{whole.text.replace(',', '')}.{frac.text if frac else '00'}")
         if price < 5.0:
             continue
-        asin = it.select_one("h2 a")["href"].split("/dp/")[-1].split("/")[0]
+        asin = it.select_one("h2 a[href]")["href"].split("/dp/")[-1].split("/")[0]
         link = f"https://www.amazon.ca/dp/{asin}?tag={AFFILIATE_TAG}"
         deals.append({"title": title_el.text.strip(), "price": f"{price:.2f}", "link": link})
     return deals
 
-# ─── Main ────────────────────────────────────────────────────────────────────
-def main():
+# ─── Async runner ─────────────────────────────────────────────────────────────
+async def run_and_notify():
     bot = Bot(BOT_TOKEN)
-    new = 0
+    new_count = 0
+
     for deal in scrape_deals():
-        if is_new_deal(deal["link"]):
-            new += 1
-            text = (
+        if is_new_deal(deal['link']):
+            new_count += 1
+            message = (
                 f"🔥 *PRICE ERROR ALERT!* 🔥\n\n"
                 f"🛍️ *{deal['title']}*\n"
                 f"💸 *Now:* ${deal['price']}\n\n"
                 f"[Buy Now]({deal['link']})"
             )
-            bot.send_message(chat_id=CHANNEL_ID, text=text,
-                             parse_mode="Markdown", disable_web_page_preview=True)
-    logger.info(f"Sent {new} new deal(s).")
+            await bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=message,
+                parse_mode="Markdown",
+                disable_web_page_preview=True
+            )
 
-# ─── DEBUG PING ───────────────────────────────────────────────────────────────
-from telegram import Bot
-if os.getenv("DEBUG_PING", "false").lower() == "true":
-    Bot(BOT_TOKEN).send_message(
-        chat_id=CHANNEL_ID,
-        text="✅ Debug ping: GitHub Actions reached your Telegram channel!"
-    )
+    logger.info(f"Sent {new_count} new deal(s).")
 
-if __name__=="__main__":
-    main()
+    # Debug ping if enabled
+    if os.getenv("DEBUG_PING", "false").lower() == "true":
+        await bot.send_message(
+            chat_id=CHANNEL_ID,
+            text="✅ Debug ping: GitHub Actions successfully reached your Telegram channel!"
+        )
+
+    # Close session
+    await bot.session.close()
+
+if __name__ == "__main__":
+    asyncio.run(run_and_notify())
