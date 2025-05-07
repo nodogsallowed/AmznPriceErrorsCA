@@ -56,7 +56,6 @@ def get_category_urls():
         if not href.startswith("/"):
             continue
         full = f"https://www.amazon.ca{href}"
-        # ensure sorting by lowest price first
         if "?" in full:
             urls.append(full + "&sort=price-asc-rank")
         else:
@@ -79,7 +78,6 @@ def scrape_deals():
             orig_el  = it.select_one("span.a-price.a-text-price span.a-offscreen")
             if not (title_el and sale_el and orig_el):
                 continue
-            # parse prices
             sale_str = sale_el.text.replace("$", "").replace(",", "")
             orig_str = orig_el.text.replace("$", "").replace(",", "")
             try:
@@ -94,11 +92,11 @@ def scrape_deals():
             asin = it.select_one("h2 a[href]")["href"].split("/dp/")[-1].split("/")[0]
             link = f"https://www.amazon.ca/dp/{asin}?tag={AFFILIATE_TAG}"
             deals.append({
-                "title":    title_el.text.strip(),
+                "title":     title_el.text.strip(),
                 "sale_price": f"{sale_price:.2f}",
                 "orig_price": f"{orig_price:.2f}",
-                "discount":  f"{int(discount)}%",
-                "link":       link
+                "discount":   f"{int(discount)}%",
+                "link":        link
             })
     return deals
 
@@ -124,7 +122,7 @@ async def run_and_notify():
             )
     logger.info(f"Sent {new_count} new deal(s).")
 
-    # optional debug ping
+    # Optional debug ping
     if os.getenv("DEBUG_PING", "false").lower() == "true":
         await bot.send_message(
             chat_id=CHANNEL_ID,
