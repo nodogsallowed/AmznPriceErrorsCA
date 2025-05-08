@@ -11,41 +11,46 @@ from telegram import Bot
 
 # ─── Load environment variables ─────────────────────────────────────────────────
 load_dotenv()
-BOT_TOKEN     = os.getenv("TELEGRAM_BOT_TOKEN") or ""
-AFFILIATE_TAG = os.getenv("AMZN_AFFILIATE_TAG", "amznerrorsca-20")
-raw_channel   = os.getenv("TELEGRAM_CHANNEL", "AmznErrorsCA")
-CHANNEL_ID    = raw_channel if raw_channel.startswith("@") else f"@{raw_channel}"
+BOT_TOKEN      = os.getenv("TELEGRAM_BOT_TOKEN")
+AFFILIATE_TAG  = os.getenv("AMZN_AFFILIATE_TAG", "amznerrorsca-20")
+RAW_CHANNEL    = os.getenv("TELEGRAM_CHANNEL", "AmznErrorsCA")
+CHANNEL_ID     = RAW_CHANNEL if RAW_CHANNEL.startswith("@") else f"@{RAW_CHANNEL}"
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
+DEBUG_PING     = os.getenv("DEBUG_PING", "false").lower() == "true"
 
 if not BOT_TOKEN:
     raise RuntimeError("Missing TELEGRAM_BOT_TOKEN in environment variables")
 
 # ─── Logging setup ─────────────────────────────────────────────────────────────
-logging.basicConfig(
-    format="%(asctime)s %(levelname)s %(message)s",
-    level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ─── Persistence: prevent duplicate alerts ───────────────────────────────────────
 SEEN_FILE = "seen.json"
-def is_new_deal(link: str) -> bool:
+def load_seen():
     try:
-        seen = json.load(open(SEEN_FILE, 'r'))
-    except (FileNotFoundError, json.JSONDecodeError):
-        seen = []
-    if link in seen:
+        return json.load(open(SEEN_FILE))
+    except:
+        return {"links": []}
+
+def save_seen(data):
+    json.dump(data, open(SEEN_FILE, "w"), indent=2)
+
+def is_new_deal(link: str) -> bool:
+    seen = load_seen()
+    if link in seen["links"]:
         return False
-    seen.append(link)
-    json.dump(seen, open(SEEN_FILE, "w"))
+    seen["links"].append(link)
+    save_seen(seen)
     return True
 
 # ─── HTTP headers ──────────────────────────────────────────────────────────────
 HEADERS = {
     "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-    "Accept-Language": "en-CA,en-US;q=0.9,en;q=0.8",
+    "Accept-Language": "en-CA,en-US;q=0.9"
 }
 
-# ─── 1. Hard-coded top-category paths ───────────────────────────────────────────
+# ─── Top-category list ─────────────────────────────────────────────────────────
 CATEGORY_PATHS = [
     "/b?node=37219708011&ref_=nav_cs_cash_desk_disco",
     "/Best-Sellers-generic/zgbs/",
@@ -72,92 +77,99 @@ def get_category_urls():
     logger.info("Will scan these categories:\n" + "\n".join(urls))
     return urls
 
-# ─── 2. Scrape each category for >90% discount deals ──────────────────────────
-def scrape_deals():
-    urls = get_category_urls()
+# ─── Scrape each category for ≥90% discount ───────────────────────────────────
+def scrape_category(url):
+    resp = requests.get(url, headers=HEADERS, timeout=10)
+    soup = BeautifulSoup(resp.text, "html.parser")
+    items = soup.select('div[data-component-type="s-search-result"]')
     deals = []
-
-    for url in urls:
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=10)
-        except Exception as e:
-            logger.warning(f"Failed to fetch {url}: {e}")
+    for it in items:
+        title_el   = it.select_one("h2 a span")
+        sale_whole = it.select_one("span.a-price-whole")
+        sale_frac  = it.select_one("span.a-price-fraction")
+        orig_el    = it.select_one("span.a-price.a-text-price span.a-offscreen")
+        if not (title_el and sale_whole and orig_el):
             continue
 
-        logger.info(f"GET {url} → {resp.status_code}")
-        soup = BeautifulSoup(resp.text, "html.parser")
-        items = soup.select('div[data-component-type="s-search-result"]')
-        logger.info(f"Category {url}: found {len(items)} items")
+        sale_str = f"{sale_whole.text.strip().replace(',', '')}.{(sale_frac.text.strip() if sale_frac else '00')}"
+        orig_str = orig_el.text.strip().lstrip('$').replace(',', '')
+        try:
+            sale_price = float(sale_str)
+            orig_price = float(orig_str)
+        except ValueError:
+            continue
 
-        for it in items:
-            title_el   = it.select_one("h2 a span")
-            sale_whole = it.select_one("span.a-price-whole")
-            sale_frac  = it.select_one("span.a-price-fraction")
-            orig_el    = it.select_one("span.a-price.a-text-price span.a-offscreen")
-            if not (title_el and sale_whole and orig_el):
-                continue
+        discount = (orig_price - sale_price) / orig_price * 100
+        if discount < 90:
+            continue
 
-            # parse prices
-            sale_str = (
-                f"{sale_whole.text.strip().replace(',', '')}."
-                f"{sale_frac.text.strip() if sale_frac else '00'}"
-            )
-            orig_str = orig_el.text.strip().lstrip('$').replace(',', '')
-            try:
-                sale_price = float(sale_str)
-                orig_price = float(orig_str)
-            except ValueError:
-                continue
-
-            discount = (orig_price - sale_price) / orig_price * 100
-            if discount < 90:
-                continue
-
-            asin = it.select_one("h2 a[href]")["href"].split("/dp/")[-1].split("/")[0]
-            link = f"https://www.amazon.ca/dp/{asin}?tag={AFFILIATE_TAG}"
-            deal = {
-                "title":      title_el.text.strip(),
-                "sale_price": f"{sale_price:.2f}",
-                "orig_price": f"{orig_price:.2f}",
-                "discount":   f"{int(discount)}%",
-                "link":       link
-            }
-            logger.info(f"Discount deal found: {deal}")
-            deals.append(deal)
-
-    logger.info(f"Finished scraping {len(urls)} categories, found {len(deals)} raw deals")
+        asin = it.select_one("h2 a[href]")["href"].split("/dp/")[-1].split("/")[0]
+        link = f"https://www.amazon.ca/dp/{asin}?tag={AFFILIATE_TAG}"
+        deals.append({
+            "title":      title_el.text.strip(),
+            "sale_price": f"{sale_price:.2f}",
+            "orig_price": f"{orig_price:.2f}",
+            "discount":   f"{int(discount)}%",
+            "link":       link,
+            "asin":       asin
+        })
     return deals
 
-# ─── 3. Async runner ─────────────────────────────────────────────────────────
+def scrape_deals():
+    all_deals = []
+    for url in get_category_urls():
+        status = requests.get(url, headers=HEADERS, timeout=10).status_code
+        logger.info(f"GET {url} → {status}")
+        all_deals.extend(scrape_category(url))
+    logger.info(f"Finished scraping {len(CATEGORY_PATHS)} categories, found {len(all_deals)} raw deals")
+    return all_deals
+
+# ─── Price history via CamelCamelCamel ────────────────────────────────────────
+def get_price_history(asin):
+    ccc_url = f"https://camelcamelcamel.com/product/{asin}"
+    try:
+        resp = requests.get(ccc_url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        low = soup.select_one(".stat.lowest span.value")
+        avg = soup.select_one(".stat.average span.value")
+        return {
+            "lowest":  low.text.strip() if low else None,
+            "average": avg.text.strip() if avg else None,
+            "url":     ccc_url
+        }
+    except Exception as e:
+        logger.warning(f"C3 history failed for {asin}: {e}")
+        return None
+
+# ─── Async runner ─────────────────────────────────────────────────────────────
 async def run_and_notify():
     bot = Bot(BOT_TOKEN)
-    new_count = 0
+    sent = 0
 
     for deal in scrape_deals():
         if is_new_deal(deal["link"]):
-            new_count += 1
+            sent += 1
+            hist = get_price_history(deal["asin"])
+            hist_text = ""
+            if hist and hist["lowest"]:
+                hist_text = f"\n📈 Lowest: {hist['lowest']} | Avg: {hist['average']}"
             text = (
-                f"🔥 *PRICE ERROR ALERT!* 🔥\n\n"
+                f"🔥 *PRICE ERROR!* 🔥\n\n"
                 f"🛍️ *{deal['title']}*\n"
-                f"💸 *Now:* ${deal['sale_price']} (was ${deal['orig_price']})\n"
-                f"📉 *Discount:* {deal['discount']}\n\n"
+                f"💸 Now: ${deal['sale_price']} (was ${deal['orig_price']})\n"
+                f"📉 {deal['discount']}{hist_text}\n\n"
                 f"[Buy Now]({deal['link']})"
             )
             await bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=text,
-                parse_mode="Markdown",
-                disable_web_page_preview=True
+                chat_id=CHANNEL_ID, text=text,
+                parse_mode="Markdown", disable_web_page_preview=True
             )
 
-    logger.info(f"Sent {new_count} new deal(s).")
+    logger.info(f"Sent {sent} new deal(s).")
 
-    # Optional debug ping
-    if os.getenv("DEBUG_PING", "false").lower() == "true":
-        await bot.send_message(
-            chat_id=CHANNEL_ID,
-            text="✅ Debug ping: GitHub Actions successfully reached your Telegram channel!"
-        )
+    if DEBUG_PING:
+        await bot.send_message(chat_id=CHANNEL_ID,
+                               text="✅ Debug ping: GitHub Actions reached your Telegram channel!")
 
 if __name__ == "__main__":
     asyncio.run(run_and_notify())
