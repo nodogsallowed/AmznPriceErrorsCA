@@ -47,43 +47,45 @@ def save_json(path, data):
     with open(path, 'w') as f:
         json.dump(data, f, indent=2)
 
-# ─── Category Mapping (example) ─────────────────────────────────────────────────
+# ─── Category Mapping ──────────────────────────────────────────────────────────
 CATEGORY_MAP = {
     "electronics": "/Electronics-Accessories/b/?ie=UTF8&node=667823011",
-    # ... fill in your categories here
+    # ... add your categories here
 }
-HEADERS = {"User-Agent":"Mozilla/5.0","Accept-Language":"en-CA"}
+HEADERS = {"User-Agent": "Mozilla/5.0", "Accept-Language": "en-CA"}
 
 def make_url(path):
     suffix = '?sort=price-asc-rank' if '?' not in path else '&sort=price-asc-rank'
     return f"https://www.amazon.ca{path}{suffix}"
 
-# Return URLs for either a single category or all
 def get_category_urls(cat=None):
     if cat:
         path = CATEGORY_MAP.get(cat.lower())
         return [make_url(path)] if path else []
     return [make_url(p) for p in CATEGORY_MAP.values()]
 
-# Scrape a single category page for deals
+# ─── Scraping ───────────────────────────────────────────────────────────────────
 def scrape_category(url, min_discount=0):
     resp = requests.get(url, headers=HEADERS, timeout=10)
     soup = BeautifulSoup(resp.text, "html.parser")
     items = soup.select('div[data-component-type="s-search-result"]')
     deals = []
     for it in items:
-        title_el   = it.select_one("h2 a span")
+        title_el = it.select_one("h2 a span")
         sale_whole = it.select_one("span.a-price-whole")
-        orig_el    = it.select_one("span.a-price.a-text-price span.a-offscreen")
+        orig_el = it.select_one("span.a-price.a-text-price span.a-offscreen")
         if not (title_el and sale_whole and orig_el):
             continue
-        sale = float(sale_whole.text.replace(',','') + ".00")
-        orig = float(orig_el.text.strip().lstrip('$').replace(',',''))
+        try:
+            sale = float(sale_whole.text.replace(',','') + ".00")
+            orig = float(orig_el.text.strip().lstrip('$').replace(',',''))
+        except ValueError:
+            continue
         discount = int((orig - sale) / orig * 100)
         if discount < min_discount:
             continue
-        link = it.select_one("h2 a[href]")["href"]
-        asin = link.split("/dp/")[-1].split("/")[0]
+        href = it.select_one("h2 a[href]")["href"]
+        asin = href.split("/dp/")[-1].split("/")[0]
         deals.append({
             "title": title_el.text.strip(),
             "sale": f"{sale:.2f}",
@@ -94,7 +96,7 @@ def scrape_category(url, min_discount=0):
         })
     return deals
 
-# Master scrape across categories
+
 def scrape_deals(cat=None, min_discount=0):
     all_deals = []
     for url in get_category_urls(cat):
@@ -107,10 +109,12 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Welcome! Use /menu to choose a command.")
 
 async def menu_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    kb = [[InlineKeyboardButton(t, callback_data=f"cmd:{c}") for t,c in [
-        ("Help","help"),("Search","search"),("Subscribe","subscribe"),("Unsubscribe","unsubscribe")]]]
-    kb += [[InlineKeyboardButton(t, callback_data=f"cmd:{c}") for t,c in [
-        ("My Settings","mysettings"),("Alert","alert"),("Scrape","scrape")]]]
+    kb = [
+        [InlineKeyboardButton("Help", callback_data="cmd:help"), InlineKeyboardButton("Search", callback_data="cmd:search")],
+        [InlineKeyboardButton("Subscribe", callback_data="cmd:subscribe"), InlineKeyboardButton("Unsubscribe", callback_data="cmd:unsubscribe")],
+        [InlineKeyboardButton("My Settings", callback_data="cmd:mysettings"), InlineKeyboardButton("Alert", callback_data="cmd:alert")],
+        [InlineKeyboardButton("Scrape", callback_data="cmd:scrape")]
+    ]
     markup = InlineKeyboardMarkup(kb)
     target = update.message or update.callback_query.message
     await target.reply_text("Please choose:", reply_markup=markup)
@@ -122,8 +126,8 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/search <category> <min_discount> - lookup deals\n"
         "/subscribe <category> <min_discount> - hourly alerts\n"
         "/unsubscribe <category> - stop alerts\n"
-        "/mysettings - view your subscriptions and alerts\n"
-        "/alert <url_or_asin> <min_drop>% - track single product\n"
+        "/mysettings - view your subscriptions\n"
+        "/alert <url_or_asin> <min_drop>% - track product\n"
         "/scrape - manual scrape (admin only)"
     )
     target = update.message or update.callback_query.message
@@ -135,7 +139,7 @@ async def search_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = ctx.args
     if len(args) != 2:
         return await update.message.reply_text("Usage: /search <category> <min_discount>")
-    cat, thresh = args[0], args[1]
+    cat, thresh = args
     try:
         min_d = int(thresh)
     except ValueError:
@@ -153,14 +157,14 @@ async def subscribe_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = ctx.args
     if len(args) != 2:
         return await update.message.reply_text("Usage: /subscribe <category> <min_discount>")
-    cat, thresh = args[0].lower(), args[1]
+    cat, thresh = args
     try:
         min_d = int(thresh)
     except ValueError:
         return await update.message.reply_text("min_discount must be an integer.")
     subs = load_json(SUBS_FILE)
     uid = str(update.message.chat_id)
-    subs.setdefault(uid, {})[cat] = min_d
+    subs.setdefault(uid, {})[cat.lower()] = min_d
     save_json(SUBS_FILE, subs)
     await update.message.reply_text(f"Subscribed to {cat} at {min_d}% discount alerts.")
 
@@ -180,14 +184,16 @@ async def unsubscribe_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def mysettings_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = str(update.message.chat_id)
     subs = load_json(SUBS_FILE).get(uid, {})
-    text = "Your subscriptions:\n" + "\n".join(f"{c}: {d}%" for c,d in subs.items()) if subs else "You have no subscriptions."
+    if not subs:
+        return await update.message.reply_text("You have no subscriptions.")
+    text = "Your subscriptions:\n" + "\n".join(f"{c}: {d}%" for c,d in subs.items())
     await update.message.reply_text(text)
 
 async def alert_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = ctx.args
     if len(args) != 2:
         return await update.message.reply_text("Usage: /alert <url_or_asin> <min_drop>")
-    item, thresh = args[0], args[1]
+    item, thresh = args
     try:
         min_d = int(thresh)
     except ValueError:
@@ -204,20 +210,18 @@ async def scrape_manual(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("❌ Not authorized.")
     await update.message.reply_text("🔄 Manual scrape started...")
     deals = scrape_deals()
+    seen = load_json(SEEN_FILE).get("links", [])
     count = 0
     for d in deals:
-        # Use seen to avoid duplicates
-        seen = load_json(SEEN_FILE).get("links", [])
         if d['link'] not in seen:
             count += 1
             await update.message.reply_text(
                 f"📢 {d['title']} - ${d['sale']} (was ${d['orig']}, {d['discount']}% off)\n{d['link']}"
             )
             seen.append(d['link'])
-        save_json(SEEN_FILE, {"links": seen})
+    save_json(SEEN_FILE, {"links": seen})
     await update.message.reply_text(f"✅ Completed. {count} new deal(s).")
 
-# Dispatcher callback for inline menu
 async def cmd_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     data = update.callback_query.data.split(':',1)[1]
     mapping = {
@@ -229,11 +233,11 @@ async def cmd_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         'alert': alert_cmd,
         'scrape': scrape_manual
     }
-    if data in mapping:
-        await mapping[data](update, ctx)
+    handler = mapping.get(data)
+    if handler:
+        await handler(update, ctx)
     else:
         await update.callback_query.message.reply_text("Unknown command.")
-
     await update.callback_query.answer()
 
 # ─── Background Jobs ───────────────────────────────────────────────────────────
@@ -252,12 +256,38 @@ async def job_alerts(context: ContextTypes.DEFAULT_TYPE):
     alerts = load_json(ALERTS_FILE)
     for uid, items in alerts.items():
         for item, min_d in items.items():
-            # Basic check: re-scrape search for ASIN
-            deals = scrape_category(f"/dp/{item}", 0) if len(item) == 10 else []
-            # TODO: implement actual price-drop logic using history
-            if deals:
-                d = deals[0]
-                # Placeholder: always notify
-                await context.bot.send_message(
-                    chat_id=int(uid),
-                    text=f"🔔 Price alert: {d['title']} now at ${d['sale']}\
+            # Check single ASIN URL
+            if len(item) == 10:
+                deals = scrape_category(f"https://www.amazon.ca/dp/{item}?tag={AFFILIATE_TAG}", 0)
+                if deals:
+                    d = deals[0]
+                    # TODO: compare historical price to trigger only when drop exceeds min_d
+                    await context.bot.send_message(
+                        chat_id=int(uid),
+                        text=f"🔔 Price alert: {d['title']} now at ${d['sale']}\n{d['link']}"
+                    )
+    if DEBUG_PING:
+        await context.bot.send_message(chat_id=int(uid), text="✅ Debug alert job ran.")
+
+# ─── Application Setup ─────────────────────────────────────────────────────────
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("menu", menu_cmd))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("search", search_cmd))
+    app.add_handler(CommandHandler("subscribe", subscribe_cmd))
+    app.add_handler(CommandHandler("unsubscribe", unsubscribe_cmd))
+    app.add_handler(CommandHandler("mysettings", mysettings_cmd))
+    app.add_handler(CommandHandler("alert", alert_cmd))
+    app.add_handler(CommandHandler("scrape", scrape_manual))
+    app.add_handler(CallbackQueryHandler(cmd_router, pattern="^cmd:"))
+
+    job_queue: JobQueue = app.job_queue
+    job_queue.run_repeating(job_subscriptions, interval=3600, first=10)
+    job_queue.run_repeating(job_alerts, interval=3600, first=20)
+
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
