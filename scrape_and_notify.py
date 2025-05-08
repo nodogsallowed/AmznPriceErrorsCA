@@ -11,7 +11,7 @@ from telegram import Bot
 
 # ─── Load environment variables ─────────────────────────────────────────────────
 load_dotenv()
-BOT_TOKEN     = os.getenv("TELEGRAM_BOT_TOKEN")
+BOT_TOKEN     = os.getenv("TELEGRAM_BOT_TOKEN") or ""
 AFFILIATE_TAG = os.getenv("AMZN_AFFILIATE_TAG", "amznerrorsca-20")
 raw_channel   = os.getenv("TELEGRAM_CHANNEL", "AmznErrorsCA")
 CHANNEL_ID    = raw_channel if raw_channel.startswith("@") else f"@{raw_channel}"
@@ -45,19 +45,30 @@ HEADERS = {
     "Accept-Language": "en-CA,en-US;q=0.9,en;q=0.8",
 }
 
-# ─── 1. Fetch top category URLs from Amazon.ca homepage ────────────────────────
+# ─── 1. Hard-coded top-category paths ───────────────────────────────────────────
+CATEGORY_PATHS = [
+    "/b?node=37219708011&ref_=nav_cs_cash_desk_disco",
+    "/Best-Sellers-generic/zgbs/",
+    "/Electronics-Accessories/b/?ie=UTF8&node=667823011&ref_=nav_cs_electronics",
+    "/Books-Used-Books-Textbooks/b/?ie=UTF8&node=916520&ref_=nav_cs_books",
+    "/Beauty/b/?ie=UTF8&node=6205124011&ref_=nav_cs_beauty",
+    "/Toys-Games/b/?ie=UTF8&node=6205517011&ref_=nav_cs_toys",
+    "/sporting-goods/b/?ie=UTF8&node=2242989011&ref_=nav_cs_sports",
+    "/Computers-Accessories/b/?ie=UTF8&node=2404990011&ref_=nav_cs_pc",
+    "/Health-Personal-Care/b/?ie=UTF8&node=6205177011&ref_=nav_cs_hpc",
+    "/Home-Improvement/b/?ie=UTF8&node=3006902011&ref_=nav_cs_hi",
+    "/Fashion/b/?ie=UTF8&node=21204935011&ref_=nav_cs_fashion",
+    "/video-games-hardware-accessories/b/?ie=UTF8&node=3198031&ref_=nav_cs_video_games",
+    "/grocery/b/?ie=UTF8&node=6967215011&ref_=nav_cs_grocery",
+    "/pet-supplies-dog-cat-food-bed-toy/b/?ie=UTF8&node=6205514011&ref_=nav_cs_pets",
+    "/gp/browse.html?node=3561346011&ref_=nav_cs_baby",
+]
+
 def get_category_urls():
-    resp = requests.get("https://www.amazon.ca", headers=HEADERS, timeout=10)
-    soup = BeautifulSoup(resp.text, "html.parser")
-    links = soup.select("#nav-xshop a[href]")
     urls = []
-    for a in links:
-        href = a.get("href") or ""
-        if not href.startswith("/"):
-            continue
-        full = f"https://www.amazon.ca{href}"
-        suffix = "&sort=price-asc-rank" if "?" in full else "?sort=price-asc-rank"
-        urls.append(full + suffix)
+    for path in CATEGORY_PATHS:
+        suffix = "&sort=price-asc-rank" if "?" in path else "?sort=price-asc-rank"
+        urls.append(f"https://www.amazon.ca{path}{suffix}")
     logger.info("Will scan these categories:\n" + "\n".join(urls))
     return urls
 
@@ -65,12 +76,14 @@ def get_category_urls():
 def scrape_deals():
     urls = get_category_urls()
     deals = []
+
     for url in urls:
         try:
             resp = requests.get(url, headers=HEADERS, timeout=10)
         except Exception as e:
             logger.warning(f"Failed to fetch {url}: {e}")
             continue
+
         logger.info(f"GET {url} → {resp.status_code}")
         soup = BeautifulSoup(resp.text, "html.parser")
         items = soup.select('div[data-component-type="s-search-result"]')
@@ -84,6 +97,7 @@ def scrape_deals():
             if not (title_el and sale_whole and orig_el):
                 continue
 
+            # parse prices
             sale_str = (
                 f"{sale_whole.text.strip().replace(',', '')}."
                 f"{sale_frac.text.strip() if sale_frac else '00'}"
