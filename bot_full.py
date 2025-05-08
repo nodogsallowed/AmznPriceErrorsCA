@@ -34,7 +34,6 @@ logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=loggin
 logger = logging.getLogger(__name__)
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
-
 def load_json(path: str) -> dict:
     try:
         with open(path, 'r') as f:
@@ -71,7 +70,6 @@ def get_category_urls(cat: str = None) -> list:
     return [make_url(p) for p in CATEGORY_MAP.values()]
 
 # ─── Scraping functions ────────────────────────────────────────────────────────
-
 def scrape_category(url: str, min_discount: int = 0) -> list:
     resp = requests.get(url, headers=HEADERS, timeout=10)
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -246,70 +244,3 @@ async def job_subscriptions(context: ContextTypes.DEFAULT_TYPE):
     data = load_json(SUBS_FILE)
     for uid, cats in data.items():
         for cat, min_d in cats.items():
-            deals = scrape_deals(cat, min_d)
-            for d in deals:
-                await context.bot.send_message(chat_id=int(uid), text=f"🔔 {d['title']} — ${d['sale']} ({d['discount']}% off)\n{d['link']}")
-
-async def job_alerts(context: ContextTypes.DEFAULT_TYPE):
-    data = load_json(ALERTS_FILE)
-    for uid, items in data.items():
-        for item, min_d in items.items():
-            if len(item) == 10:
-                deals = scrape_category(f"https://www.amazon.ca/dp/{item}?tag={AFFILIATE_TAG}")
-                if deals:
-                    d = deals[0]
-                    await context.bot.send_message(chat_id=int(uid), text=f"🔔 {d['title']} now at ${d['sale']}\n{d['link']}")
-    if DEBUG_PING and data:
-        first = next(iter(data))
-        await context.bot.send_message(chat_id=int(first), text="✅ Alert job ran.")
-
-# ─── Bot setup ─────────────────────────────────────────────────────────────────
-
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    jq: JobQueue = app.job_queue
-
-    # Start/menu
-    app.add_handler(CommandHandler("start", menu_cmd))
-    app.add_handler(CommandHandler("menu", menu_cmd))
-
-    # Static commands
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("mysettings", mysettings_cmd))
-    app.add_handler(CommandHandler("scrape", scrape_manual))
-
-    # Inline menu flows
-    app.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(search_start, pattern="^cmd:search$")],
-        states={SEARCH: [MessageHandler(filters.FORCE_REPLY & ~filters.COMMAND, search_input)]},
-        fallbacks=[]
-    ))
-    app.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(subscribe_start, pattern="^cmd:subscribe$")],
-        states={SUBSCRIBE: [MessageHandler(filters.FORCE_REPLY & ~filters.COMMAND, subscribe_input)]},
-        fallbacks=[]
-    ))
-    app.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(unsubscribe_start, pattern="^cmd:unsubscribe$")],
-        states={UNSUBSCRIBE: [MessageHandler(filters.FORCE_REPLY & ~filters.COMMAND, unsubscribe_input)]},
-        fallbacks=[]
-    ))
-    app.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(alert_start, pattern="^cmd:alert$")],
-        states={ALERT: [MessageHandler(filters.FORCE_REPLY & ~filters.COMMAND, alert_input)]},
-        fallbacks=[]
-    ))
-
-    # Inline static callbacks
-    app.add_handler(CallbackQueryHandler(help_cmd, pattern="^cmd:help$"))
-    app.add_handler(CallbackQueryHandler(mysettings_cmd, pattern="^cmd:mysettings$"))
-    app.add_handler(CallbackQueryHandler(scrape_manual, pattern="^cmd:scrape$"))
-
-    # Scheduled jobs
-    jq.run_repeating(job_subscriptions, interval=3600, first=10)
-    jq.run_repeating(job_alerts, interval=3600, first=20)
-
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
