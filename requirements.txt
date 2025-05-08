@@ -3,3 +3,5 @@ requests
 beautifulsoup4
 schedule
 python-dotenv
+six
+urllib3
