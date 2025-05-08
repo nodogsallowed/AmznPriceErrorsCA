@@ -52,20 +52,20 @@ def get_category_urls():
     links = soup.select("#nav-xshop a[href]")
     urls = []
     for a in links:
-        href = a.get("href")
-        if not href or not href.startswith("/"):
+        href = a.get("href") or ""
+        if not href.startswith("/"):
             continue
         full = f"https://www.amazon.ca{href}"
-        if "?" in full:
-            urls.append(full + "&sort=price-asc-rank")
-        else:
-            urls.append(full + "?sort=price-asc-rank")
+        suffix = "&sort=price-asc-rank" if "?" in full else "?sort=price-asc-rank"
+        urls.append(full + suffix)
+    logger.info("Will scan these categories:\n" + "\n".join(urls))
     return urls
 
 # ─── 2. Scrape each category for >90% discount deals ──────────────────────────
 def scrape_deals():
+    urls = get_category_urls()
     deals = []
-    for url in get_category_urls():
+    for url in urls:
         try:
             resp = requests.get(url, headers=HEADERS, timeout=10)
         except Exception as e:
@@ -77,15 +77,17 @@ def scrape_deals():
         logger.info(f"Category {url}: found {len(items)} items")
 
         for it in items:
-            title_el = it.select_one("h2 a span")
+            title_el   = it.select_one("h2 a span")
             sale_whole = it.select_one("span.a-price-whole")
-            sale_frac = it.select_one("span.a-price-fraction")
-            orig_el = it.select_one("span.a-price.a-text-price span.a-offscreen")
+            sale_frac  = it.select_one("span.a-price-fraction")
+            orig_el    = it.select_one("span.a-price.a-text-price span.a-offscreen")
             if not (title_el and sale_whole and orig_el):
                 continue
 
-            # parse sale and original prices
-            sale_str = f"{sale_whole.text.strip().replace(',', '')}.{sale_frac.text.strip() if sale_frac else '00'}"
+            sale_str = (
+                f"{sale_whole.text.strip().replace(',', '')}."
+                f"{sale_frac.text.strip() if sale_frac else '00'}"
+            )
             orig_str = orig_el.text.strip().lstrip('$').replace(',', '')
             try:
                 sale_price = float(sale_str)
@@ -108,12 +110,15 @@ def scrape_deals():
             }
             logger.info(f"Discount deal found: {deal}")
             deals.append(deal)
+
+    logger.info(f"Finished scraping {len(urls)} categories, found {len(deals)} raw deals")
     return deals
 
 # ─── 3. Async runner ─────────────────────────────────────────────────────────
 async def run_and_notify():
     bot = Bot(BOT_TOKEN)
     new_count = 0
+
     for deal in scrape_deals():
         if is_new_deal(deal["link"]):
             new_count += 1
@@ -130,6 +135,7 @@ async def run_and_notify():
                 parse_mode="Markdown",
                 disable_web_page_preview=True
             )
+
     logger.info(f"Sent {new_count} new deal(s).")
 
     # Optional debug ping
