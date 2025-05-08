@@ -1,11 +1,10 @@
 import os
 import json
 import logging
-import asyncio
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot, ForceReply
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -24,12 +23,11 @@ AFFILIATE_TAG  = os.getenv("AMZN_AFFILIATE_TAG", "amznerrorsca-20")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
 DEBUG_PING     = os.getenv("DEBUG_PING", "false").lower() == "true"
 
-# ─── Files ─────────────────────────────────────────────────────────────────────
+# ─── File paths ─────────────────────────────────────────────────────────────────
 DATA_DIR       = os.getenv("DATA_DIR", ".")
 SEEN_FILE      = os.path.join(DATA_DIR, "seen.json")
 SUBS_FILE      = os.path.join(DATA_DIR, "subscriptions.json")
 ALERTS_FILE    = os.path.join(DATA_DIR, "alerts.json")
-FEEDBACK_FILE  = os.path.join(DATA_DIR, "feedback.json")
 
 # ─── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
@@ -50,10 +48,10 @@ def save_json(path: str, data: dict) -> None:
 def get_target(update: Update):
     return update.message or (update.callback_query and update.callback_query.message)
 
-# ─── Category Mapping ──────────────────────────────────────────────────────────
+# ─── Category mapping ──────────────────────────────────────────────────────────
 CATEGORY_MAP = {
     "electronics": "/Electronics-Accessories/b/?ie=UTF8&node=667823011",
-    # Add other categories...
+    # Extend with more categories...
 }
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept-Language": "en-CA"}
 
@@ -67,7 +65,7 @@ def get_category_urls(cat: str = None) -> list:
         return [make_url(path)] if path else []
     return [make_url(p) for p in CATEGORY_MAP.values()]
 
-# ─── Scraping ───────────────────────────────────────────────────────────────────
+# ─── Scraping functions ────────────────────────────────────────────────────────
 def scrape_category(url: str, min_discount: int = 0) -> list:
     resp = requests.get(url, headers=HEADERS, timeout=10)
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -80,8 +78,8 @@ def scrape_category(url: str, min_discount: int = 0) -> list:
         if not (title_el and sale_whole and orig_el):
             continue
         try:
-            sale = float(sale_whole.text.replace(',','') + ".00")
-            orig = float(orig_el.text.strip().lstrip('$').replace(',',''))
+            sale = float(sale_whole.text.replace(',', '') + ".00")
+            orig = float(orig_el.text.strip().lstrip('$').replace(',', ''))
         except ValueError:
             continue
         discount = int((orig - sale) / orig * 100)
@@ -90,191 +88,191 @@ def scrape_category(url: str, min_discount: int = 0) -> list:
         href = it.select_one("h2 a[href]")["href"]
         asin = href.split("/dp/")[-1].split("/")[0]
         deals.append({
-            "title":    title_el.text.strip(),
-            "sale":     f"{sale:.2f}",
-            "orig":     f"{orig:.2f}",
+            "title": title_el.text.strip(),
+            "sale": f"{sale:.2f}",
+            "orig": f"{orig:.2f}",
             "discount": discount,
-            "link":     f"https://www.amazon.ca/dp/{asin}?tag={AFFILIATE_TAG}",
-            "asin":     asin
+            "link": f"https://www.amazon.ca/dp/{asin}?tag={AFFILIATE_TAG}",
+            "asin": asin
         })
     return deals
 
-
 def scrape_deals(cat: str = None, min_discount: int = 0) -> list:
-    all_deals = []
+    results = []
     for url in get_category_urls(cat):
         logger.info(f"Scraping {url}")
-        all_deals.extend(scrape_category(url, min_discount))
-    return all_deals
+        results.extend(scrape_category(url, min_discount))
+    return results
 
 # ─── Conversation states ───────────────────────────────────────────────────────
 SEARCH, SUBSCRIBE, UNSUBSCRIBE, ALERT = range(4)
 
-# ─── Inline-prompt Handlers ─────────────────────────────────────────────────────
+# ─── Inline flows ─────────────────────────────────────────────────────────────
 async def search_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    target = get_target(update)
-    await target.reply_text(
-        "🔍 Enter category and min discount (e.g. electronics 20)",
+    tgt = get_target(update)
+    await tgt.reply_text(
+        "🔍 Please reply with: <category> <min_discount>",
         reply_markup=ForceReply(selective=True)
     )
     return SEARCH
 
 async def search_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip().split()
-    if len(text) != 2 or not text[1].isdigit():
-        await update.message.reply_text("Invalid format. Use: <category> <min_discount>")
+    parts = update.message.text.strip().split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        await update.message.reply_text("Invalid. Use: <category> <min_discount>")
         return SEARCH
-    cat, min_d = text[0], int(text[1])
+    cat, min_d = parts[0], int(parts[1])
     deals = scrape_deals(cat, min_d)
     if not deals:
         await update.message.reply_text("No deals found.")
     else:
         for d in deals[:5]:
             await update.message.reply_text(
-                f"📢 {d['title']} - ${d['sale']} (was ${d['orig']}, {d['discount']}% off)\n{d['link']}"
+                f"📢 {d['title']} — ${d['sale']} (was ${d['orig']}, {d['discount']}% off)\n{d['link']}"
             )
     return ConversationHandler.END
 
 async def subscribe_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    target = get_target(update)
-    await target.reply_text(
-        "🔔 Enter category and min discount to subscribe (e.g. electronics 15)",
+    tgt = get_target(update)
+    await tgt.reply_text(
+        "🔔 Reply with: <category> <min_discount> to subscribe",
         reply_markup=ForceReply(selective=True)
     )
     return SUBSCRIBE
 
 async def subscribe_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip().split()
-    if len(text) != 2 or not text[1].isdigit():
-        await update.message.reply_text("Invalid format. Use: <category> <min_discount>")
+    parts = update.message.text.strip().split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        await update.message.reply_text("Invalid. Use: <category> <min_discount>")
         return SUBSCRIBE
-    cat, min_d = text[0].lower(), int(text[1])
-    subs = load_json(SUBS_FILE)
+    cat, min_d = parts[0].lower(), int(parts[1])
+    data = load_json(SUBS_FILE)
     uid = str(update.message.chat.id)
-    subs.setdefault(uid, {})[cat] = min_d
-    save_json(SUBS_FILE, subs)
-    await update.message.reply_text(f"Subscribed to {cat} at {min_d}% discount alerts.")
+    data.setdefault(uid, {})[cat] = min_d
+    save_json(SUBS_FILE, data)
+    await update.message.reply_text(f"Subscribed: {cat} @ {min_d}%")
     return ConversationHandler.END
 
 async def unsubscribe_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    target = get_target(update)
-    await target.reply_text(
-        "❌ Enter category to unsubscribe (e.g. electronics)",
+    tgt = get_target(update)
+    await tgt.reply_text(
+        "❌ Reply with category to unsubscribe",
         reply_markup=ForceReply(selective=True)
     )
     return UNSUBSCRIBE
 
 async def unsubscribe_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cat = update.message.text.strip().lower()
-    subs = load_json(SUBS_FILE)
+    data = load_json(SUBS_FILE)
     uid = str(update.message.chat.id)
-    if uid in subs and cat in subs[uid]:
-        del subs[uid][cat]
-        save_json(SUBS_FILE, subs)
-        await update.message.reply_text(f"Unsubscribed from {cat}.")
+    if uid in data and cat in data[uid]:
+        del data[uid][cat]
+        save_json(SUBS_FILE, data)
+        await update.message.reply_text(f"Unsubscribed: {cat}")
     else:
-        await update.message.reply_text(f"No subscription found for {cat}.")
+        await update.message.reply_text(f"No subscription found: {cat}")
     return ConversationHandler.END
 
 async def alert_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    target = get_target(update)
-    await target.reply_text(
-        "⚠️ Enter URL or ASIN and min drop percent (e.g. B00EXAMPLE 10)",
+    tgt = get_target(update)
+    await tgt.reply_text(
+        "⚠️ Reply with: <URL_or_ASIN> <min_drop_percent>",
         reply_markup=ForceReply(selective=True)
     )
     return ALERT
 
 async def alert_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip().split()
-    if len(text) != 2 or not text[1].isdigit():
-        await update.message.reply_text("Invalid format. Use: <url_or_asin> <min_drop>")
+    parts = update.message.text.strip().split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        await update.message.reply_text("Invalid. Use: <URL_or_ASIN> <min_drop>")
         return ALERT
-    item, min_d = text[0], int(text[1])
-    alerts = load_json(ALERTS_FILE)
+    item, min_d = parts[0], int(parts[1])
+    data = load_json(ALERTS_FILE)
     uid = str(update.message.chat.id)
-    alerts.setdefault(uid, {})[item] = min_d
-    save_json(ALERTS_FILE, alerts)
-    await update.message.reply_text(f"Price alert set on {item} for {min_d}% drop.")
+    data.setdefault(uid, {})[item] = min_d
+    save_json(ALERTS_FILE, data)
+    await update.message.reply_text(f"Alert set on {item} @ {min_d}% drop")
     return ConversationHandler.END
 
-# ─── Manual scrape & help ─────────────────────────────────────────────────────
+# ─── Static callbacks ─────────────────────────────────────────────────────────
 async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    target = get_target(update)
-    await target.reply_text(
-        "/help - show commands\n"
-        "/search - interactive search\n"
-        "/subscribe - interactive subscription\n"
-        "/unsubscribe - interactive unsubscribe\n"
-        "/mysettings - view subscriptions\n"
-        "/alert - interactive alert setup\n"
-        "/scrape - manual scrape (admin only)"
+    tgt = get_target(update)
+    await tgt.reply_text(
+        "/menu — show options\n"
+        "/help — this message\n"
+        "/mysettings — list subscriptions\n"
+        "/scrape — manual scrape (admin)"
     )
 
+async def mysettings_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    tgt = get_target(update)
+    uid = str(tgt.chat.id)
+    subs = load_json(SUBS_FILE).get(uid, {})
+    if not subs:
+        return await tgt.reply_text("No subscriptions.")
+    lines = [f"{c}: {d}%" for c, d in subs.items()]
+    await tgt.reply_text("Your subscriptions:\n" + "\n".join(lines))
+
 async def scrape_manual(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    target = get_target(update)
-    user = target.from_user.username
+    tgt = get_target(update)
+    user = tgt.from_user.username
     if ADMIN_USERNAME and user != ADMIN_USERNAME:
-        return await target.reply_text("❌ Not authorized.")
-    await target.reply_text("🔄 Manual scrape started...")
+        return await tgt.reply_text("❌ Not authorized.")
+    await tgt.reply_text("🔄 Scraping now...")
     deals = scrape_deals()
     seen = load_json(SEEN_FILE).get("links", [])
     count = 0
     for d in deals:
         if d['link'] not in seen:
             count += 1
-            await target.reply_text(
-                f"📢 {d['title']} - ${d['sale']} (was ${d['orig']}, {d['discount']}% off)\n{d['link']}"
-            )
+            await tgt.reply_text(f"📢 {d['title']} — ${d['sale']} ({d['discount']}% off)\n{d['link']}")
             seen.append(d['link'])
     save_json(SEEN_FILE, {"links": seen})
-    await target.reply_text(f"✅ Completed. {count} new deal(s).")
+    await tgt.reply_text(f"✅ Done: {count} new deals.")
 
-async def mysettings_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    target = get_target(update)
-    uid = str(target.chat.id)
-    subs = load_json(SUBS_FILE).get(uid, {})
-    if not subs:
-        return await target.reply_text("You have no subscriptions.")
-    text = "Your subscriptions:\n" + "\n".join(f"{c}: {d}%" for c,d in subs.items())
-    await target.reply_text(text)
-
-# ─── Background Jobs ───────────────────────────────────────────────────────────
+# ─── Background jobs ──────────────────────────────────────────────────────────
 async def job_subscriptions(context: ContextTypes.DEFAULT_TYPE):
-    subs = load_json(SUBS_FILE)
-    for uid, cats in subs.items():
+    data = load_json(SUBS_FILE)
+    for uid, cats in data.items():
         for cat, min_d in cats.items():
             deals = scrape_deals(cat, min_d)
             for d in deals:
                 await context.bot.send_message(
-                    chat_id=int(uid),
-                    text=f"🔔 Subscription alert: {d['title']} - ${d['sale']} ({d['discount']}% off)\n{d['link']}"
+                    chat_id=int(uid), text=f"🔔 {d['title']} — ${d['sale']} ({d['discount']}% off)\n{d['link']}"
                 )
 
 async def job_alerts(context: ContextTypes.DEFAULT_TYPE):
-    alerts = load_json(ALERTS_FILE)
-    for uid, items in alerts.items():
+    data = load_json(ALERTS_FILE)
+    for uid, items in data.items():
         for item, min_d in items.items():
             if len(item) == 10:
                 deals = scrape_category(f"https://www.amazon.ca/dp/{item}?tag={AFFILIATE_TAG}")
                 if deals:
                     d = deals[0]
                     await context.bot.send_message(
-                        chat_id=int(uid),
-                        text=f"🔔 Price alert: {d['title']} now at ${d['sale']}\n{d['link']}"
+                        chat_id=int(uid), text=f"🔔 {d['title']} now at ${d['sale']}\n{d['link']}"
                     )
-    if DEBUG_PING and alerts:
-        first_uid = next(iter(alerts))
-        await context.bot.send_message(chat_id=int(first_uid), text="✅ Debug alert job ran.")
+    if DEBUG_PING and data:
+        first = next(iter(data))
+        await context.bot.send_message(chat_id=int(first), text="✅ Alert job ran.")
 
-# ─── Application Setup ─────────────────────────────────────────────────────────
+# ─── Bot setup ─────────────────────────────────────────────────────────────────
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+    jq: JobQueue = app.job_queue
 
-    # Conversation handlers for inline buttons
+    # Commands
+    app.add_handler(CommandHandler("start", lambda u,c: menu_cmd(u,c)))
+    app.add_handler(CommandHandler("menu", menu_cmd))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("mysettings", mysettings_cmd))
+    app.add_handler(CommandHandler("scrape", scrape_manual))
+
+    # Inline-menu flows
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(search_start, pattern="^cmd:search$")],
         states={SEARCH: [MessageHandler(filters.FORCE_REPLY & ~filters.COMMAND, search_input)]},
@@ -292,4 +290,20 @@ def main():
     ))
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(alert_start, pattern="^cmd:alert$")],
-        states={
+        states={ALERT: [MessageHandler(filters.FORCE_REPLY & ~filters.COMMAND, alert_input)]},
+        fallbacks=[]
+    ))
+
+    # Static callbacks
+    app.add_handler(CallbackQueryHandler(help_cmd, pattern="^cmd:help$"))
+    app.add_handler(CallbackQueryHandler(mysettings_cmd, pattern="^cmd:mysettings$"))
+    app.add_handler(CallbackQueryHandler(scrape_manual, pattern="^cmd:scrape$"))
+
+    # Scheduled jobs
+    jq.run_repeating(job_subscriptions, interval=3600, first=10)
+    jq.run_repeating(job_alerts, interval=3600, first=20)
+
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
