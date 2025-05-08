@@ -23,11 +23,11 @@ jobs:
           pip install requests beautifulsoup4 python-dotenv python-telegram-bot[job-queue]
 
       - name: Run scraper
-             env:
-       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-       AMZN_AFFILIATE_TAG: ${{ secrets.AMZN_AFFILIATE_TAG }}
-       TELEGRAM_CHANNEL:  ${{ secrets.TELEGRAM_CHANNEL }}
-       DEBUG_PING:        ${{ secrets.DEBUG_PING }}
-       ADMIN_USERNAME:    ${{ secrets.ADMIN_USERNAME }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          AMZN_AFFILIATE_TAG: ${{ secrets.AMZN_AFFILIATE_TAG }}
+          TELEGRAM_CHANNEL:  ${{ secrets.TELEGRAM_CHANNEL }}
+          DEBUG_PING:        ${{ secrets.DEBUG_PING }}
+          ADMIN_USERNAME:    ${{ secrets.ADMIN_USERNAME }}
         run: |
           python scrape_and_notify.py
