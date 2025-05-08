@@ -52,8 +52,8 @@ def get_category_urls():
     links = soup.select("#nav-xshop a[href]")
     urls = []
     for a in links:
-        href = a["href"]
-        if not href.startswith("/"):
+        href = a.get("href")
+        if not href or not href.startswith("/"):
             continue
         full = f"https://www.amazon.ca{href}"
         if "?" in full:
@@ -66,7 +66,11 @@ def get_category_urls():
 def scrape_deals():
     deals = []
     for url in get_category_urls():
-        resp = requests.get(url, headers=HEADERS, timeout=10)
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=10)
+        except Exception as e:
+            logger.warning(f"Failed to fetch {url}: {e}")
+            continue
         logger.info(f"GET {url} → {resp.status_code}")
         soup = BeautifulSoup(resp.text, "html.parser")
         items = soup.select('div[data-component-type="s-search-result"]')
@@ -74,30 +78,36 @@ def scrape_deals():
 
         for it in items:
             title_el = it.select_one("h2 a span")
-            sale_el  = it.select_one("span.a-price span.a-offscreen")
-            orig_el  = it.select_one("span.a-price.a-text-price span.a-offscreen")
-            if not (title_el and sale_el and orig_el):
+            sale_whole = it.select_one("span.a-price-whole")
+            sale_frac = it.select_one("span.a-price-fraction")
+            orig_el = it.select_one("span.a-price.a-text-price span.a-offscreen")
+            if not (title_el and sale_whole and orig_el):
                 continue
-            sale_str = sale_el.text.replace("$", "").replace(",", "")
-            orig_str = orig_el.text.replace("$", "").replace(",", "")
+
+            # parse sale and original prices
+            sale_str = f"{sale_whole.text.strip().replace(',', '')}.{sale_frac.text.strip() if sale_frac else '00'}"
+            orig_str = orig_el.text.strip().lstrip('$').replace(',', '')
             try:
                 sale_price = float(sale_str)
                 orig_price = float(orig_str)
             except ValueError:
                 continue
+
             discount = (orig_price - sale_price) / orig_price * 100
             if discount < 90:
                 continue
 
             asin = it.select_one("h2 a[href]")["href"].split("/dp/")[-1].split("/")[0]
             link = f"https://www.amazon.ca/dp/{asin}?tag={AFFILIATE_TAG}"
-            deals.append({
+            deal = {
                 "title":      title_el.text.strip(),
                 "sale_price": f"{sale_price:.2f}",
                 "orig_price": f"{orig_price:.2f}",
                 "discount":   f"{int(discount)}%",
                 "link":       link
-            })
+            }
+            logger.info(f"Discount deal found: {deal}")
+            deals.append(deal)
     return deals
 
 # ─── 3. Async runner ─────────────────────────────────────────────────────────
