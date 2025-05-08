@@ -1,6 +1,5 @@
+# requirements.txt
 python-telegram-bot[job-queue]
 requests
 beautifulsoup4
 python-dotenv
-six
-urllib3<2.0.0
