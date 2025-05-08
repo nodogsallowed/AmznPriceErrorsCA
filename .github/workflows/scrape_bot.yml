@@ -1,9 +1,11 @@
+# .github/workflows/scrape_bot.yml
+
 name: Hourly Amazon Price Bot
 
 on:
   schedule:
-    - cron: '0 * * * *'   # every hour on the hour
-  workflow_dispatch:     # allow manual trigger
+    - cron: '0 * * * *'       # every hour
+  workflow_dispatch:         # manual trigger
 
 jobs:
   scrape:
@@ -19,15 +21,14 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 python-dotenv python-telegram-bot[job-queue]
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt
 
       - name: Run scraper
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           AMZN_AFFILIATE_TAG: ${{ secrets.AMZN_AFFILIATE_TAG }}
-          TELEGRAM_CHANNEL:  ${{ secrets.TELEGRAM_CHANNEL }}
-          DEBUG_PING:        ${{ secrets.DEBUG_PING }}
-          ADMIN_USERNAME:    ${{ secrets.ADMIN_USERNAME }}
-        run: |
-          python scrape_and_notify.py
+          TELEGRAM_CHANNEL:   ${{ secrets.TELEGRAM_CHANNEL }}
+          DEBUG_PING:         ${{ secrets.DEBUG_PING }}
+          ADMIN_USERNAME:     ${{ secrets.ADMIN_USERNAME }}
+        run: python scrape_and_notify.py
